@@ -19,5 +19,7 @@ public class DataBasePreLoader implements CommandLineRunner{
     @Override
     public void run(String... args) throws Exception {
         userRepository.save(new User("FrodoBeggins", "ring bearer"));
+        userRepository.save(new User("BilboBeggins", "burglar"));
+        userRepository.save(new User("Aragorn", "The King"));
     }
 }
