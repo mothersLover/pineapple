@@ -3,6 +3,7 @@ const ReactDOM = require('react-dom');
 const when = require('when');
 const client = require('./client');
 const follow = require('./follow'); // function to hop multiple links by "rel"
+var stompClient = require('./websocket-listener')
 
 var root = '/api';
 
@@ -16,10 +17,17 @@ class App extends React.Component {
         this.onUpdate = this.onUpdate.bind(this);
         this.onDelete = this.onDelete.bind(this);
         this.onNavigate = this.onNavigate.bind(this);
+        this.refreshAndGoToLastPage = this.refreshAndGoToLastPage.bind(this);
+        this.refreshCurrentPage = this.refreshCurrentPage.bind(this);
     }
 
     componentDidMount() {
         this.loadFromServer(this.state.pageSize);
+        stompClient.register([
+            {route: '/topic/newUser', callback: this.refreshAndGoToLastPage},
+            {route: '/topic/updateUser', callback: this.refreshCurrentPage},
+            {route: '/topic/deleteUser', callback: this.refreshCurrentPage}
+        ]);
     }
 
     loadFromServer(pageSize) {
@@ -55,23 +63,14 @@ class App extends React.Component {
     }
 
     onCreate(newUser) {
-        follow(client, root, ['users']).then(userCollection => {
-            return client({
+        follow(client, root, ['users']).done(response => {
+            client({
                 method: 'POST',
-                path: userCollection.entity._links.self.href,
+                path: response.entity._links.self.href,
                 entity: newUser,
                 headers: {'Content-Type': 'application/json'}
             })
-        }).then(response => {
-            return follow(client, root, [
-                {rel: 'users', params: {'size': this.state.pageSize}}]);
-        }).done(response => {
-            if (typeof response.entity._links.last != "undefined") {
-                this.onNavigate(response.entity._links.last.href);
-            } else {
-                this.onNavigate(response.entity._links.self.href);
-            }
-        });
+        })
     }
 
     // tag::update[]
@@ -95,7 +94,7 @@ class App extends React.Component {
     }
 
     onDelete(user) {
-        client({method: 'DELETE', path: user._links.self.href}).done(response => {
+        client({method: 'DELETE', path: user.entity._links.self.href}).done(response => {
             this.loadFromServer(this.state.pageSize);
         });
     }
@@ -129,6 +128,49 @@ class App extends React.Component {
         if (pageSize !== this.state.pageSize) {
             this.loadFromServer(pageSize);
         }
+    }
+
+    refreshAndGoToLastPage(message) {
+        follow(client, root, [{
+            rel: 'users',
+            params: {size: this.state.pageSize}
+        }]).done(response => {
+            if (response.entity._links.last !== undefined) {
+                this.onNavigate(response.entity._links.last.href);
+            } else {
+                this.onNavigate(response.entity._links.self.href);
+            }
+        })
+    }
+
+    refreshCurrentPage(message) {
+        follow(client, root, [{
+            rel: 'users',
+            params: {
+                size: this.state.pageSize,
+                page: this.state.page.number
+            }
+        }]).then(userCollection => {
+            this.links = userCollection.entity._links;
+            this.page = userCollection.entity.page;
+
+            return userCollection.entity._embedded.users.map(users => {
+                return client({
+                    method: 'GET',
+                    path: users._links.self.href
+                })
+            });
+        }).then(userPromises => {
+            return when.all(userPromises);
+        }).then(users => {
+            this.setState({
+                page: this.page,
+                users: users,
+                attributes: Object.keys(this.schema.properties),
+                pageSize: this.state.pageSize,
+                links: this.links
+            });
+        });
     }
 
     render() {
@@ -238,7 +280,8 @@ class UserList extends React.Component {
 
 class User extends React.Component {
     constructor(props) {
-        super(props)
+        super(props);
+        this.handleDelete = this.handleDelete.bind(this);
     }
 
     handleDelete() {
@@ -250,6 +293,11 @@ class User extends React.Component {
             <tr>
                 <td>{this.props.user.entity.name}</td>
                 <td>{this.props.user.entity.description}</td>
+                <td>
+                    <UpdateDialog user={this.props.user}
+                                  attributes={this.props.attributes}
+                                  onUpdate={this.props.onUpdate}/>
+                </td>
                 <td>
                     <button onClick={this.handleDelete}>Delete</button>
                 </td>
@@ -310,6 +358,55 @@ class CreateDialog extends React.Component {
     }
 
 }
+
+class UpdateDialog extends React.Component {
+
+    constructor(props) {
+        super(props);
+        this.handleSubmit = this.handleSubmit.bind(this);
+    }
+
+    handleSubmit(e) {
+        e.preventDefault();
+        var updatedUser = {};
+        this.props.attributes.forEach(attribute => {
+            updatedUser[attribute] = ReactDOM.findDOMNode(this.refs[attribute]).value.trim();
+        });
+        this.props.onUpdate(this.props.user, updatedUser);
+        window.location = "#";
+    }
+
+    render() {
+        var inputs = this.props.attributes.map(attribute =>
+            <p key={this.props.user.entity[attribute]}>
+                <input type="text" placeholder={attribute}
+                       defaultValue={this.props.user.entity[attribute]}
+                       ref={attribute} className="field" />
+            </p>
+        );
+
+        var dialogId = "updateUser-" + this.props.user.entity._links.self.href;
+
+        return (
+            <div key={this.props.user.entity._links.self.href}>
+                <a href={"#" + dialogId}>Update</a>
+                <div id={dialogId} className="modalDialog">
+                    <div>
+                        <a href="#" title="Close" className="close">X</a>
+
+                        <h2>Update a user</h2>
+
+                        <form>
+                            {inputs}
+                            <button onClick={this.handleSubmit}>Update</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        )
+    }
+
+};
 
 ReactDOM.render(
     <App />,
