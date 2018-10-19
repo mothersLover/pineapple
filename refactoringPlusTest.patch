@@ -1,0 +1,259 @@
+Index: src/main/java/com/komin/core/UserSession.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/UserSession.java	(date 1539869315000)
++++ src/main/java/com/komin/core/UserSession.java	(date 1539952274000)
+@@ -17,18 +17,13 @@
+ 
+ package com.komin.core;
+ 
+-import com.google.gson.JsonObject;
+ import org.kurento.client.IceCandidate;
+ import org.kurento.client.WebRtcEndpoint;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+-import org.springframework.web.socket.TextMessage;
+ 
+ import javax.servlet.http.HttpSession;
+-import java.io.IOException;
+-import java.util.ArrayList;
+-import java.util.Collection;
+-import java.util.List;
++import java.util.*;
+ 
+ /**
+  * User session.
+@@ -45,7 +40,7 @@
+   private boolean isReadyToCall;
+   private WebRtcEndpoint webRtcEndpoint;
+   private final List<IceCandidate> candidateList = new ArrayList<IceCandidate>();
+-  private final List<String> tags = new ArrayList<>();
++  private final Set<String> tags = new HashSet<>();
+ 
+   private boolean anonymous;
+ 
+Index: src/main/java/com/komin/core/repository/TagRepository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/repository/TagRepository.java	(date 1539869315000)
++++ src/main/java/com/komin/core/repository/TagRepository.java	(date 1539952274000)
+@@ -2,8 +2,13 @@
+ 
+ import com.komin.core.UserSession;
+ 
++import java.util.Map;
++import java.util.Set;
++
+ public interface TagRepository {
+ 
++    Map<String, Set<String>> getTagsMap();
++
+     void registerTags(UserSession userSession);
+ 
+     void deleteTags(UserSession userSession);
+Index: src/main/java/com/komin/core/repository/TagRepositoryImpl.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/repository/TagRepositoryImpl.java	(date 1539869315000)
++++ src/main/java/com/komin/core/repository/TagRepositoryImpl.java	(date 1539952274000)
+@@ -15,6 +15,11 @@
+ 
+     public TagRepositoryImpl() {}
+ 
++    @Override
++    public Map<String, Set<String>> getTagsMap() {
++        return tagsMap;
++    }
++
+     public void registerTags(UserSession userSession) {
+         Collection<String> tags = userSession.getTags();
+         tags.forEach(tag -> tagsMap.computeIfAbsent(tag, x -> new HashSet<>()).add(userSession.getSessionId()));
+Index: src/main/java/com/komin/core/utils/ResolvingTagsFromUserUtils.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/utils/ResolvingTagsFromUserUtils.java	(date 1539869315000)
++++ src/main/java/com/komin/core/utils/ResolvingTagsFromUserUtils.java	(date 1539952274000)
+@@ -22,24 +22,10 @@
+     }
+ 
+     private static int numberOfCoincidence(Collection<String> first, Collection<String> second) {
+-        Object[] firstObjects = first.toArray();
+-        Object[] secondObjects = second.toArray();
+-        int i = 0, j = 0;
+         int coincidence = 0;
+-        while (i < firstObjects.length && j < secondObjects.length) {
+-            String firstObject = (String)firstObjects[i];
+-            String secondObject = (String) secondObjects[j];
+-            int compare = firstObject.compareTo(secondObject);
+-            if (compare == 0) {
++        for (String s : second) {
++            if (first.contains(s)) {
+                 coincidence++;
+-                i++;
+-                j++;
+-                continue;
+-            }
+-            if (compare < 0) {
+-                j++;
+-            } else {
+-                i++;
+             }
+         }
+         return coincidence;
+@@ -64,7 +50,7 @@
+ 
+         @Override
+         public int compareTo(Candidate o) {
+-            return Integer.compare(this.rating, o.getRating());
++            return -1 * Integer.compare(this.rating, o.getRating());
+         }
+     }
+ }
+Index: src/test/java/core/repository/TagRepositoryTest.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/test/java/core/repository/TagRepositoryTest.java	(date 1539952274000)
++++ src/test/java/core/repository/TagRepositoryTest.java	(date 1539952274000)
+@@ -0,0 +1,132 @@
++package core.repository;
++
++import com.komin.core.UserSession;
++import com.komin.core.repository.TagRepository;
++import com.komin.core.repository.TagRepositoryImpl;
++import com.komin.core.repository.UserRepository;
++import com.komin.core.utils.ResolvingTagsFromUserUtils;
++import org.junit.Assert;
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.mockito.Mockito;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.TestConfiguration;
++import org.springframework.context.annotation.Bean;
++import org.springframework.test.context.junit4.SpringRunner;
++
++import javax.servlet.http.HttpSession;
++import java.util.*;
++import java.util.concurrent.ConcurrentHashMap;
++
++@RunWith(SpringRunner.class)
++public class TagRepositoryTest {
++
++    @TestConfiguration
++    public static class TagRepositoryTestContextConfiguration {
++
++        @Bean
++        public UserRepository userRepository() {
++            return new UserRepository();
++        }
++
++        @Bean
++        public TagRepository tagRepository() {
++            return new TagRepositoryImpl();
++        }
++    }
++
++    @Autowired
++    private UserRepository userRepository;
++    @Autowired
++    private TagRepository tagRepository;
++
++    private final List<UserSession> userSessions = new ArrayList<>();
++    private final Map<String, List<String>> stringSetMap = new ConcurrentHashMap<>();
++    private final Set<String> strings = new HashSet<>();
++    private final String[] tags = new String[] {"Russia", "China", "USA", "Work", "Family", "Girls", "Boys", "Date", "Friends",
++            "Spring", "Service", "Test", "Controller", "Unit", "During", "component", "scanning", "we" ,"might" , "find",
++            "components", "or", "configurations", "created" , "only" ,"for" ,"specific", "tests" ,"accidentally"};
++
++    @Before
++    public void prepare() {
++
++        HttpSession httpSessionMock = Mockito.mock(HttpSession.class);
++
++        for (int i = 0; i < 10; i++) {
++            List<String> taggs = new ArrayList<>();
++            for (int j = 0; j < 3; j++) {
++                Random random = new Random();
++                int nextInt = random.nextInt(tags.length);
++                String tag = tags[nextInt].toLowerCase();
++                taggs.add(tag);
++                strings.add(tag);
++            }
++            stringSetMap.put(String.valueOf(i), taggs);
++        }
++
++        for (int i = 0; i < 10; i++) {
++            UserSession userSession = new UserSession(httpSessionMock, String.valueOf(i));
++            userRepository.register(userSession);
++            userSession.initTags(stringSetMap.get(String.valueOf(i)));
++            userSessions.add(userSession);
++        }
++    }
++
++    @Test
++    public void tagsCrudTest() {
++        userSessions.forEach(user -> tagRepository.registerTags(user));
++        Map<String, Set<String>> tagsMap = tagRepository.getTagsMap();
++        Assert.assertEquals(strings.size(), tagsMap.size());
++        userSessions.forEach(user -> tagRepository.deleteTags(user));
++        Assert.assertEquals(0, tagsMap.size());
++    }
++
++    @Test
++    public void resolvingTagsUtilTest() {
++        userSessions.forEach(user -> tagRepository.registerTags(user));
++        int size = stringSetMap.size();
++        Random random = new Random();
++        int i = random.nextInt(size);
++        String sessionId = String.valueOf(i);
++        List<String> strings = stringSetMap.get(sessionId);
++        UserSession resolve = ResolvingTagsFromUserUtils.resolve(userSessions, strings);
++        UserSession rightUser = userRepository.getBySessionId(sessionId);
++        Assert.assertEquals(rightUser, resolve);
++
++        Map<String, Integer> integerMap = new HashMap<>();
++        List<String> randomTags = new ArrayList<>();
++        for (int j = 0; j < 3; j++) {
++            Map<String, Set<String>> tagsMap = tagRepository.getTagsMap();
++            Object[] availableTags = this.strings.toArray();
++            int nextInt = random.nextInt(availableTags.length);
++            String randomTag = ((String)availableTags[nextInt]).toLowerCase();
++            randomTags.add(randomTag);
++            Set<String> strings1 = tagsMap.get(randomTag);
++            for (String s : strings1) {
++                Integer integer = integerMap.get(s);
++                if (integer == null) {
++                    integer = 1;
++                } else {
++                    integer++;
++                }
++                integerMap.put(s, integer);
++            }
++        }
++
++        Integer integer = integerMap.entrySet().stream().map(Map.Entry::getValue).max(Integer::compare).get();
++        int max = 0;
++        String candidate = "";
++        for(Map.Entry<String, Integer> entry : integerMap.entrySet()) {
++            Integer value = entry.getValue();
++            if (value > max) {
++                candidate = entry.getKey();
++                max = value;
++            }
++        }
++        Assert.assertEquals(integer, Integer.valueOf(max));
++
++        UserSession resolve1 = ResolvingTagsFromUserUtils.resolve(userSessions, randomTags);
++        Assert.assertEquals(userRepository.getBySessionId(candidate), resolve1);
++    }
++}
