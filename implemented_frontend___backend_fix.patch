@@ -1,0 +1,398 @@
+Index: src/main/java/com/komin/core/controllers/ActionSocketController.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/controllers/ActionSocketController.java	(date 1541583910000)
++++ src/main/java/com/komin/core/controllers/ActionSocketController.java	(date 1541597327000)
+@@ -28,6 +28,7 @@
+ public class ActionSocketController {
+     private final static String DESTINATION_ICECANDIDATES_COMMAND = "/queue/iceCandidates";
+     private final static String DESTINATION_APP_INFO_COMMAND = "/queue/appInfo";
++    private final static String DESTINATION_TAG_INFO_COMMAND = "/queue/tagInfo";
+     private final UserRepository userRepository;
+     private final SendMessageToUserService sendMessageToUserService;
+     private final Connect2UsersService connect2UsersService;
+@@ -199,7 +200,7 @@
+                 throw new IllegalArgumentException("Can't find tag in message!");
+             }
+             JsonObject infoAboutUsers = tagsInfoService.getTagInfo(String.valueOf(tag));
+-            sendMessageToUserService.sendMessage(DESTINATION_APP_INFO_COMMAND, infoAboutUsers, userSession);
++            sendMessageToUserService.sendMessage(DESTINATION_TAG_INFO_COMMAND, infoAboutUsers, userSession);
+         }
+     }
+ }
+\ No newline at end of file
+Index: src/main/java/com/komin/core/services/TagsInfoService.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/services/TagsInfoService.java	(date 1541583910000)
++++ src/main/java/com/komin/core/services/TagsInfoService.java	(date 1541597327000)
+@@ -25,7 +25,7 @@
+     public JsonObject getTagsInfo() {
+         JsonObject resultJsonObject = new JsonObject();
+         int userCount = userRepository.getUserCount();
+-        resultJsonObject.addProperty("userCount", userCount);
++        resultJsonObject.addProperty("usersCount", userCount);
+         int usersWithTags = tagRepository.getUsersWithTags().size();
+         resultJsonObject.addProperty("usersWithTags", usersWithTags);
+         Collection<TagImpl> mostPopularTags = tagRepository.getMostPopularTags();
+@@ -46,7 +46,8 @@
+     public JsonObject getTagInfo(String tag) {
+         JsonObject jsonObject = new JsonObject();
+         int numberOfUsers = tagRepository.countOfUsersWithParticularTag(tag);
+-        jsonObject.addProperty(tag, numberOfUsers);
++        jsonObject.addProperty("tag", tag);
++        jsonObject.addProperty("count", numberOfUsers);
+         return jsonObject;
+     }
+ }
+Index: src/main/js/app.js
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/js/app.js	(date 1541583910000)
++++ src/main/js/app.js	(date 1541597327000)
+@@ -19,7 +19,8 @@
+                 stop : "/app/stop",
+                 deleteMe : "/app/deleteUser",
+                 sendNewChatMessage: "/app/sendMessage",
+-                getChatInfo: "/app/getAppInfo"
++                getAppInfo: "/app/getAppInfo",
++                getTagInfo: "/app/getTagInfo"
+             },
+             videoInput : null,
+             videoOutput : null,
+@@ -50,6 +51,8 @@
+         this.sendrecvCallBack = this.sendrecvCallBack.bind(this);
+         this.invokeCallRequest = this.invokeCallRequest.bind(this);
+         this.sendIceCandidates = this.sendIceCandidates.bind(this);
++        this.sendTagInfoRequest = this.sendTagInfoRequest.bind(this);
++        this.sendAppInfoRequest = this.sendAppInfoRequest.bind(this);
+         this.registerContentBlock = this.registerContentBlock.bind(this);
+         this.wait = this.wait.bind(this);
+         this.stopCommunication = this.stopCommunication.bind(this);
+@@ -57,6 +60,7 @@
+         this.findNext = this.findNext.bind(this);
+         this.receiveChatMessage = this.receiveChatMessage.bind(this);
+         this.receiveAppInfo = this.receiveAppInfo.bind(this);
++        this.receiveTagInfo = this.receiveTagInfo.bind(this);
+         this.sendNewChatMessage = this.sendNewChatMessage.bind(this);
+         this.checkBoxOnChange = this.checkBoxOnChange.bind(this);
+     }
+@@ -69,11 +73,20 @@
+             {route: '/user/queue/stop', callback: this.findNext},
+             {route: '/user/queue/iceCandidates', callback: this.sendIceCandidates},
+             {route: '/user/queue/newMessage', callback: this.receiveChatMessage},
+-            {route: '/user/queue/appInfo', callback: this.receiveChatMessage},
++            {route: '/user/queue/appInfo', callback: this.receiveAppInfo},
++            {route: '/user/queue/tagInfo', callback: this.receiveTagInfo},
+         ]);
+         this.setState({videoInput : document.getElementById('videoInput'),
+             videoOutput : document.getElementById('videoOutput')});
+         this.registerTabCloseAndRefreshEvent();
++        this.timerID = setInterval(
++            () => this.sendAppInfoRequest(),
++            60000
++        );
++    }
++
++    componentWillUnmount() {
++        clearInterval(this.timerID);
+     }
+ 
+     registerTabCloseAndRefreshEvent() {
+@@ -116,13 +129,25 @@
+     }
+ 
+     receiveAppInfo(message) {
++        this.state.contentBlock.state.tags.updateInfo(message.body);
++    }
+ 
++    receiveTagInfo(message) {
++        this.state.contentBlock.state.tags.incomeTagInfo(message.body);
+     }
+ 
+     sendNewChatMessage(message) {
+         this.sendMessage(this.state.destinations.sendNewChatMessage, message);
+     }
+ 
++    sendTagInfoRequest(message) {
++        this.sendMessage(this.state.destinations.getTagInfo, message);
++    }
++
++    sendAppInfoRequest(message) {
++        this.sendMessage(this.state.destinations.getAppInfo, message);
++    }
++
+     showError(message) {
+         console.log("Error - " + message.body);
+         alert("Error " + message.body);
+@@ -252,7 +277,9 @@
+                               stopButtonAction={this.stopCommunication}
+                               chatButtonAction={this.sendNewChatMessage}
+                               checkBoxOnChange={this.checkBoxOnChange}
+-                              register={this.registerContentBlock}/>
++                              register={this.registerContentBlock}
++                              sendTagInfoRequest={this.sendTagInfoRequest}
++                />
+                 <FooterBlock/>
+             </div>
+         )
+Index: src/main/js/components/ContentBlock.js
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/js/components/ContentBlock.js	(date 1541583910000)
++++ src/main/js/components/ContentBlock.js	(date 1541597327000)
+@@ -1,6 +1,7 @@
+ import Chat from "./ChatComponent";
+ import StartButton from './StartButton';
+ import StopButton from './StopButton';
++import TagsComponent from './TagComponent';
+ 
+ const React = require('react');
+ const Draggabilly = require('draggabilly');
+@@ -13,12 +14,14 @@
+             startButton: null,
+             stopButton: null,
+             chat : null,
++            tags : null,
+             register: props.register
+         };
+ 
+         this.registerStartButton = this.registerStartButton.bind(this);
+         this.registerStopButton = this.registerStopButton.bind(this);
+         this.registerChat = this.registerChat.bind(this);
++        this.registerTags = this.registerTags.bind(this);
+     }
+ 
+     componentDidMount() {
+@@ -38,6 +41,10 @@
+         this.setState({chat : object});
+     }
+ 
++    registerTags(object) {
++        this.setState({tags : object});
++    }
++
+     render() {
+         var checkBox =
+             <div>
+@@ -54,6 +61,10 @@
+                         <p>To skip current opponent and find new please press <b>Next</b> button :)</p>
+                         <p>To stop video streaming press <b>Stop</b></p>
+                         <p>Have a nice time and welcome! :)</p>
++                    </div>
++                    <div className="row">
++                        <TagsComponent sendAction={this.props.sendTagInfoRequest}
++                                       register={this.registerTags}/>
+                     </div>
+                     <div className="row">
+                         <div className="col-md-7">
+Index: src/main/js/components/TagComponent.js
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/js/components/TagComponent.js	(date 1541597327000)
++++ src/main/js/components/TagComponent.js	(date 1541597327000)
+@@ -0,0 +1,185 @@
++const React = require('react');
++
++export default class TagComponent extends React.Component {
++    constructor(props) {
++        super(props);
++        this.state = {
++            usersCount: 0,
++            usersWithTags: 0,
++            mostPopularTags: [],
++            currentTag: '',
++            myTags: [],
++            maxTags: 5,
++            register: props.register,
++            sendAction: props.sendAction
++        };
++        this.popularTagClick = this.popularTagClick.bind(this);
++        this.addMyTag = this.addMyTag.bind(this);
++        this.deleteMyTag = this.deleteMyTag.bind(this);
++        this.updateInfo = this.updateInfo.bind(this);
++        this.requestInfoAboutTag = this.requestInfoAboutTag.bind(this);
++        this.incomeTagInfo = this.incomeTagInfo.bind(this);
++        this.onInputChange = this.onInputChange.bind(this);
++    }
++
++    componentDidMount() {
++        this.state.register(this);
++    }
++
++    popularTagClick(tag) {
++        if (this.state.myTags.length < this.state.maxTags) {
++            this.addMyTag(tag);
++        }
++    }
++
++    addMyTag(tag) {
++        let name = tag.state.name;
++        let count = tag.state.count;
++        const {myTags} = this.state;
++        var newTag = {
++            tag: name,
++            count: count
++        };
++        const newTags = {...myTags, newTag};
++        this.setState({myTags: newTags});
++    }
++
++    deleteMyTag(tag) {
++        const {myTags} = this.state;
++        var tagToDelete = {
++            tag: tag.state.name,
++            count: tag.state.count
++        };
++        let indexOf = myTags.indexOf(tagToDelete);
++        const newTags = myTags.splice(indexOf, 1);
++        this.setState({myTags, newTags});
++    }
++
++    updateInfo(message) {
++        if (message) {
++            const parsedMessage = JSON.parse(message);
++            let userCount = parsedMessage.usersCount;
++            let usersWithTags = parsedMessage.usersWithTags;
++            let mostPopularTags = parsedMessage.mostPopularTags;
++            let newTags = [];
++            mostPopularTags.forEach(item => {
++                const newTag = {
++                    tag: item.tag,
++                    count: item.count
++                };
++                newTags = {...newTags, newTag};
++            });
++            this.setState({
++                usersCount: userCount,
++                usersWithTags: usersWithTags,
++                mostPopularTags: newTags
++            });
++        }
++    }
++
++    requestInfoAboutTag() {
++        if (this.state.currentTag) {
++            this.state.sendAction(this.state.currentTag);
++        }
++    }
++
++    incomeTagInfo(message) {
++        if (message) {
++            if (this.state.myTags.length >= this.state.maxTags) {
++                return;
++            }
++            const parsedMessage = JSON.parse(message);
++            let tag = parsedMessage.tag;
++            let count = parsedMessage.count;
++            const newTag = {
++                tag: tag,
++                count: count
++            };
++            this.addMyTag(newTag);
++        }
++    }
++
++    onInputChange(e) {
++        this.setState({currentTag: e.target.value});
++    }
++
++    render() {
++        var popularTags = this.state.mostPopularTags.map(item => {
++            return <PopularTag name={item.tag} count={item.count} onClick={this.popularTagClick}/>
++        });
++        var myTags = this.state.myTags.map(item => {
++            return <MyTag name={item.tag} count={item.count} onClick={this.deleteMyTag}/>
++        });
++
++        return (
++            <div>
++                <div className="appInfo">
++                    <p>Active users : {this.state.usersCount}</p>
++                    <p>Active users with tags: {this.state.usersWithTags}</p>
++                </div>
++                <div className="popularTags">
++                    {popularTags}
++                </div>
++                <input id="tagInput" onChange={this.onInputChange}/>
++                <button id="sendTag" onClick={this.requestInfoAboutTag}/>
++                <div className="myTags">
++                    {myTags}
++                </div>
++            </div>
++        )
++    }
++}
++
++class Tag extends React.Component {
++    constructor(props) {
++        super(props);
++        this.state = {
++            name: props.name,
++            count: props.count,
++            onClick: props.onClick
++        }
++    }
++}
++
++class MyTag extends Tag {
++    constructor(props) {
++        super(props);
++        this.onClick = this.onClick.bind(this);
++    }
++
++    onClick(e) {
++        this.state.onClick(this);
++    }
++
++    render() {
++        return (
++            <div className="myTag">
++                <p>{this.state.name}</p>
++                <p>{this.state.count}</p>
++                <button id="deleteTag" onClick={this.onClick}>
++                    <image id="deleteTagImg"/>
++                </button>
++            </div>
++        )
++    }
++}
++
++class PopularTag extends Tag {
++    constructor(props) {
++        super(props);
++        this.onClick = this.onClick.bind(this);
++    }
++
++    onClick(e) {
++        this.state.onClick(this);
++    }
++
++    render() {
++        return (
++            <div className="popularTag" onClick={this.onClick}>
++                <p>{this.state.name}</p>
++                <p>{this.state.count}</p>
++            </div>
++        )
++    }
++}
+\ No newline at end of file
+Index: src/main/resources/static/tags.css
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/resources/static/tags.css	(date 1541597327000)
++++ src/main/resources/static/tags.css	(date 1541597327000)
+@@ -0,0 +1,0 @@

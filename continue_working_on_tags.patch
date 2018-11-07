@@ -1,0 +1,527 @@
+Index: src/main/java/com/komin/core/controllers/ActionSocketController.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/controllers/ActionSocketController.java	(date 1539952274000)
++++ src/main/java/com/komin/core/controllers/ActionSocketController.java	(date 1541085445000)
+@@ -8,6 +8,7 @@
+ import com.komin.core.UserSession;
+ import com.komin.core.exceptions.KominRunTimeException;
+ import com.komin.core.services.Connect2UsersService;
++import com.komin.core.services.InfoAboutUsersService;
+ import com.komin.core.services.SendChatMessageService;
+ import com.komin.core.services.SendMessageToUserService;
+ import org.kurento.client.IceCandidate;
+@@ -26,18 +27,22 @@
+ @Controller
+ public class ActionSocketController {
+     private final static String DESTINATION_ICECANDIDATES_COMMAND = "/queue/iceCandidates";
++    private final static String DESTINATION_APP_INFO_COMMAND = "/queue/appInfo";
+     private final UserRepository userRepository;
+     private final SendMessageToUserService sendMessageToUserService;
+     private final Connect2UsersService connect2UsersService;
+     private final SendChatMessageService sendChatMessageService;
++    private final InfoAboutUsersService infoAboutUsersService;
+ 
+     @Autowired
+     public ActionSocketController(UserRepository userRepository, SendMessageToUserService sendMessageToUserService,
+-                                  Connect2UsersService connect2UsersService, SendChatMessageService sendChatMessageService) {
++                                  Connect2UsersService connect2UsersService, SendChatMessageService sendChatMessageService,
++                                  InfoAboutUsersService infoAboutUsersService) {
+         this.userRepository = userRepository;
+         this.sendMessageToUserService = sendMessageToUserService;
+         this.connect2UsersService = connect2UsersService;
+         this.sendChatMessageService = sendChatMessageService;
++        this.infoAboutUsersService = infoAboutUsersService;
+     }
+ 
+     @MessageMapping("/sdpOffer")
+@@ -166,4 +171,17 @@
+         }
+         sendChatMessageService.sendMessageToOtherUsersFromMyActiveSession(userSession, jsonObject);
+     }
++
++    @MessageMapping("/getAppInfo")
++    public void getInfoAboutChat(@Payload String message, SimpMessageHeaderAccessor headerAccessor) {
++        String sessionId = headerAccessor.getSessionId();
++        if (sessionId == null) {
++            throw new IllegalArgumentException("Can't find sessionId attribute!");
++        }
++        if (userRepository.exists(sessionId)) {
++            UserSession userSession = userRepository.getBySessionId(sessionId);
++            JsonObject infoAboutUsers = infoAboutUsersService.getInfoAboutUsers();
++            sendMessageToUserService.sendMessage(DESTINATION_APP_INFO_COMMAND, infoAboutUsers, userSession);
++        }
++    }
+ }
+\ No newline at end of file
+Index: src/main/java/com/komin/core/entities/TagImpl.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/entities/TagImpl.java	(date 1541085445000)
++++ src/main/java/com/komin/core/entities/TagImpl.java	(date 1541085445000)
+@@ -0,0 +1,44 @@
++package com.komin.core.entities;
++
++
++public class TagImpl implements Comparable<TagImpl> {
++
++    private final String tag;
++
++    public String getTag() {
++        return tag;
++    }
++
++    public int getCount() {
++        return count;
++    }
++
++    private final int count;
++
++    public TagImpl(String tag, int count) {
++        this.tag = tag;
++        this.count = count;
++    }
++
++    @Override
++    public int compareTo(TagImpl o) {
++        return -1 * Integer.compare(o.count, this.count);
++    }
++
++    @Override
++    public boolean equals(Object o) {
++        if (this == o) return true;
++        if (o == null || getClass() != o.getClass()) return false;
++
++        TagImpl tag1 = (TagImpl) o;
++
++        return count == tag1.count && tag.equals(tag1.tag);
++    }
++
++    @Override
++    public int hashCode() {
++        int result = tag.hashCode();
++        result = 31 * result + count;
++        return result;
++    }
++}
+Index: src/main/java/com/komin/core/repository/ActiveUserRepository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/repository/ActiveUserRepository.java	(date 1539952274000)
++++ src/main/java/com/komin/core/repository/ActiveUserRepository.java	(date 1541085445000)
+@@ -28,6 +28,9 @@
+             if (candidate != null) {
+                 activeUserSessions.remove(candidate);
+                 return candidate;
++            } else {
++                activeUserSessions.addLast(userSession);
++                return null;
+             }
+         }
+         return activeUserSessions.pollFirst();
+Index: src/main/java/com/komin/core/repository/TagRepository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/repository/TagRepository.java	(date 1539952274000)
++++ src/main/java/com/komin/core/repository/TagRepository.java	(date 1541085445000)
+@@ -1,7 +1,9 @@
+ package com.komin.core.repository;
+ 
+ import com.komin.core.UserSession;
++import com.komin.core.entities.TagImpl;
+ 
++import java.util.Collection;
+ import java.util.Map;
+ import java.util.Set;
+ 
+@@ -12,4 +14,8 @@
+     void registerTags(UserSession userSession);
+ 
+     void deleteTags(UserSession userSession);
++
++    Collection<TagImpl> getMostPopularTags();
++
++    Set<String> getUsersWithTags();
+ }
+Index: src/main/java/com/komin/core/repository/TagRepositoryImpl.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/repository/TagRepositoryImpl.java	(date 1539952274000)
++++ src/main/java/com/komin/core/repository/TagRepositoryImpl.java	(date 1541085445000)
+@@ -1,17 +1,18 @@
+ package com.komin.core.repository;
+ 
+ import com.komin.core.UserSession;
++import com.komin.core.entities.*;
+ import org.springframework.stereotype.Component;
+ 
+-import java.util.Collection;
+-import java.util.HashSet;
+-import java.util.Map;
+-import java.util.Set;
++import java.util.*;
+ import java.util.concurrent.ConcurrentHashMap;
+ 
+ @Component
+ public class TagRepositoryImpl implements TagRepository {
+     private final Map<String, Set<String>> tagsMap = new ConcurrentHashMap<>();
++    private final Set<String> usersWithTags = new HashSet<>();
++    private final static int BUFFER_THRESHOLD = 5;
++    private final BoundedTagsBuffer tagsBuffer = new BoundedTagsBuffer(BUFFER_THRESHOLD);
+ 
+     public TagRepositoryImpl() {}
+ 
+@@ -22,19 +23,67 @@
+ 
+     public void registerTags(UserSession userSession) {
+         Collection<String> tags = userSession.getTags();
+-        tags.forEach(tag -> tagsMap.computeIfAbsent(tag, x -> new HashSet<>()).add(userSession.getSessionId()));
++        tags.forEach(tag -> {
++            Set<String> strings = tagsMap.computeIfAbsent(tag, x -> new HashSet<>());
++            strings.add(userSession.getSessionId());
++            tagsBuffer.addTag(tag, strings.size());
++        });
++        usersWithTags.add(userSession.getSessionId());
+     }
+ 
+-    public synchronized void deleteTags(UserSession userSession) {
++    public PriorityQueue<TagImpl> getMostPopularTags() {
++        return tagsBuffer.tags;
++    }
++
++    public void deleteTags(UserSession userSession) {
++        usersWithTags.remove(userSession.getSessionId());
+         Collection<String> tags = userSession.getTags();
+         tags.forEach(tag -> {
+             Set<String> strings = tagsMap.get(tag);
+             if (strings != null) {
+                 strings.remove(userSession.getSessionId());
++                tagsBuffer.addTag(tag, strings.size());
+                 if (strings.isEmpty()) {
+                     tagsMap.remove(tag);
+                 }
+             }
+         });
+     }
++
++    public Set<String> getUsersWithTags() {
++        return usersWithTags;
++    }
++
++    private class BoundedTagsBuffer {
++        private final Map<String, Integer> tagsMap = new HashMap<>();
++        private final int threshold;
++        private final PriorityQueue<TagImpl> tags = new PriorityQueue<>();
++
++        BoundedTagsBuffer(int threshold) {
++            this.threshold = threshold;
++        }
++
++        void addTag(String tag, int count) {
++            Integer previousValue = tagsMap.get(tag);
++            if (previousValue != null) {
++                tags.remove(new TagImpl(tag, previousValue));
++                tags.add(new TagImpl(tag, count));
++                tagsMap.put(tag, count);
++            } else {
++                if (tagsMap.size() < threshold) {
++                    tagsMap.put(tag, count);
++                    tags.add(new TagImpl(tag, count));
++                } else {
++                    TagImpl peek = tags.peek();
++                    if (peek.getCount() < count) {
++                        String oldTag = peek.getTag();
++                        tagsMap.remove(oldTag);
++                        tagsMap.put(tag, count);
++                        tags.poll();
++                        tags.add(new TagImpl(tag, count));
++                    }
++                }
++            }
++        }
++    }
+ }
+Index: src/main/java/com/komin/core/repository/UserRepository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/repository/UserRepository.java	(date 1539952274000)
++++ src/main/java/com/komin/core/repository/UserRepository.java	(date 1541085445000)
+@@ -29,6 +29,10 @@
+     return usersBySessionId.containsKey(sessionId);
+   }
+ 
++  public int getUserCount() {
++    return usersBySessionId.size();
++  }
++
+   public UserSession removeBySessionId(String sessionId) {
+     final UserSession user = getBySessionId(sessionId);
+     if (user != null) {
+Index: src/main/java/com/komin/core/services/InfoAboutUsersService.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/java/com/komin/core/services/InfoAboutUsersService.java	(date 1541085445000)
++++ src/main/java/com/komin/core/services/InfoAboutUsersService.java	(date 1541085445000)
+@@ -0,0 +1,45 @@
++package com.komin.core.services;
++
++import com.google.gson.JsonArray;
++import com.google.gson.JsonObject;
++import com.komin.core.entities.TagImpl;
++import com.komin.core.repository.TagRepository;
++import com.komin.core.repository.UserRepository;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.stereotype.Service;
++
++import java.util.Collection;
++
++@Service
++public class InfoAboutUsersService {
++
++    private final UserRepository userRepository;
++    private final TagRepository tagRepository;
++
++    @Autowired
++    public InfoAboutUsersService(UserRepository userRepository, TagRepository tagRepository) {
++        this.userRepository = userRepository;
++        this.tagRepository = tagRepository;
++    }
++
++    public JsonObject getInfoAboutUsers() {
++        JsonObject resultJsonObject = new JsonObject();
++        int userCount = userRepository.getUserCount();
++        resultJsonObject.addProperty("userCount", userCount);
++        int usersWithTags = tagRepository.getUsersWithTags().size();
++        resultJsonObject.addProperty("usersWithTags", usersWithTags);
++        Collection<TagImpl> mostPopularTags = tagRepository.getMostPopularTags();
++        JsonArray jsonArray = new JsonArray();
++        for (TagImpl tag : mostPopularTags) {
++            int count = tag.getCount();
++            if (count > 0) {
++                JsonObject tagObject = new JsonObject();
++                tagObject.addProperty("tag", tag.getTag());
++                tagObject.addProperty("count", tag.getCount());
++                jsonArray.add(tagObject);
++            }
++        }
++        resultJsonObject.add("mostPopularTags", jsonArray);
++        return resultJsonObject;
++    }
++}
+Index: src/main/js/app.js
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/js/app.js	(date 1539952274000)
++++ src/main/js/app.js	(date 1541085445000)
+@@ -18,7 +18,8 @@
+                 iceCandidates : "/app/iceCandidates",
+                 stop : "/app/stop",
+                 deleteMe : "/app/deleteUser",
+-                sendNewChatMessage: "/app/sendMessage"
++                sendNewChatMessage: "/app/sendMessage",
++                getChatInfo: "/app/getAppInfo"
+             },
+             videoInput : null,
+             videoOutput : null,
+@@ -54,7 +55,8 @@
+         this.stopCommunication = this.stopCommunication.bind(this);
+         this.connectUsers = this.connectUsers.bind(this);
+         this.findNext = this.findNext.bind(this);
+-        this.receiveMessage = this.receiveMessage.bind(this);
++        this.receiveChatMessage = this.receiveChatMessage.bind(this);
++        this.receiveAppInfo = this.receiveAppInfo.bind(this);
+         this.sendNewChatMessage = this.sendNewChatMessage.bind(this);
+         this.checkBoxOnChange = this.checkBoxOnChange.bind(this);
+     }
+@@ -66,7 +68,8 @@
+             {route: '/user/queue/connect', callback: this.connectUsers},
+             {route: '/user/queue/stop', callback: this.findNext},
+             {route: '/user/queue/iceCandidates', callback: this.sendIceCandidates},
+-            {route: '/user/queue/newMessage', callback: this.receiveMessage},
++            {route: '/user/queue/newMessage', callback: this.receiveChatMessage},
++            {route: '/user/queue/appInfo', callback: this.receiveChatMessage},
+         ]);
+         this.setState({videoInput : document.getElementById('videoInput'),
+             videoOutput : document.getElementById('videoOutput')});
+@@ -108,10 +111,14 @@
+         alert(message.body);
+     }
+ 
+-    receiveMessage(message) {
++    receiveChatMessage(message) {
+         this.state.contentBlock.state.chat.addExternalMessage(message.body);
+     }
+ 
++    receiveAppInfo(message) {
++
++    }
++
+     sendNewChatMessage(message) {
+         this.sendMessage(this.state.destinations.sendNewChatMessage, message);
+     }
+Index: src/main/js/components/ChatComponent.js
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/main/js/components/ChatComponent.js	(date 1539952274000)
++++ src/main/js/components/ChatComponent.js	(date 1541085445000)
+@@ -11,13 +11,13 @@
+             externalAvatar : 'img/ork.png',
+             register : props.register,
+             sendButtonAction : props.chatButtonAction,
+-            maxMessageInScreen : 8
+         };
+ 
+         this.formatAMPM = this.formatAMPM.bind(this);
+         this.addExternalMessage = this.addExternalMessage.bind(this);
+         this.addInternalMessage = this.addInternalMessage.bind(this);
+         this.onChange = this.onChange.bind(this);
++        this.onKeyPress = this.onKeyPress.bind(this);
+         this.refresh = this.refresh.bind(this);
+         this.scrollToBottom = this.scrollToBottom.bind(this);
+     }
+@@ -27,9 +27,7 @@
+     }
+ 
+     componentDidUpdate() {
+-        if (this.state.items.length > this.state.maxMessageInScreen) {
+-            this.scrollToBottom();
+-        }
++        this.scrollToBottom();
+     }
+ 
+     scrollToBottom() {
+@@ -82,6 +80,12 @@
+         this.setState({ newItem: e.target.value });
+     }
+ 
++    onKeyPress(e) {
++        if (e.key === 'Enter') {
++            document.getElementById('sendMessage').click();
++        }
++    }
++
+     refresh() {
+         this.setState({items : []})
+     }
+@@ -113,11 +117,13 @@
+                                     <input className="my-text"
+                                            value={this.state.newItem}
+                                            onChange={this.onChange}
+-                                           placeholder="Type a message"/>
++                                           placeholder="Type a message"
++                                           onKeyPress={this.onKeyPress}
++                                    />
+                                 </div>
+                             </div>
+                             <div style={{padding : "10px"}}>
+-                                <button disabled={!this.state.enable} className="glyphicon glyphicon-share-alt" onClick={this.addInternalMessage}>
++                                <button id="sendMessage" disabled={!this.state.enable} className="glyphicon glyphicon-share-alt" onClick={this.addInternalMessage}>
+                                     <image src="img/send.png"/>
+                                 </button>
+                             </div>
+Index: src/test/java/core/repository/TagRepositoryTest.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/test/java/core/repository/TagRepositoryTest.java	(date 1539952274000)
++++ src/test/java/core/repository/TagRepositoryTest.java	(date 1541085445000)
+@@ -1,6 +1,7 @@
+ package core.repository;
+ 
+ import com.komin.core.UserSession;
++import com.komin.core.entities.TagImpl;
+ import com.komin.core.repository.TagRepository;
+ import com.komin.core.repository.TagRepositoryImpl;
+ import com.komin.core.repository.UserRepository;
+@@ -71,20 +72,70 @@
+             userSession.initTags(stringSetMap.get(String.valueOf(i)));
+             userSessions.add(userSession);
+         }
++
++        userSessions.forEach(user -> tagRepository.registerTags(user));
+     }
+ 
+     @Test
+     public void tagsCrudTest() {
+-        userSessions.forEach(user -> tagRepository.registerTags(user));
+         Map<String, Set<String>> tagsMap = tagRepository.getTagsMap();
+         Assert.assertEquals(strings.size(), tagsMap.size());
+         userSessions.forEach(user -> tagRepository.deleteTags(user));
+         Assert.assertEquals(0, tagsMap.size());
+     }
+ 
++    @Test
++    public void mostPopularTagsTest() {
++        Map<String, Set<String>> tagsMap = tagRepository.getTagsMap();
++        int size = tagsMap.size();
++        int max = 0;
++        Set<String> maxGuys = new HashSet<>();
++        ArrayDeque<String> result = new ArrayDeque<>();
++        String maxCandidate = "";
++        for (int i = 0; i < size; i++) {
++            for (Map.Entry<String, Set<String>> entry : tagsMap.entrySet()) {
++                String tag = entry.getKey();
++                Set<String> strings = entry.getValue();
++                if (strings.size() > max && !maxGuys.contains(tag)) {
++                    max = strings.size();
++                    maxCandidate = tag;
++                }
++            }
++            maxGuys.add(maxCandidate);
++            result.addLast(maxCandidate);
++            max = 0;
++            maxCandidate = "";
++        }
++        ArrayList<Integer> resultSet1 = new ArrayList<>();
++        ArrayList<Integer> resultSet2 = new ArrayList<>();
++        for (int i = 0; i < 5; i++) {
++            String s = result.pollFirst();
++            resultSet1.add(tagsMap.get(s).size());
++            Collections.sort(resultSet1);
++        }
++        Collection<TagImpl> mostPopularTags = tagRepository.getMostPopularTags();
++        for (TagImpl tag : mostPopularTags) {
++            resultSet2.add(tag.getCount());
++            Collections.sort(resultSet2);
++        }
++        boolean deepEquals = Objects.deepEquals(resultSet1, resultSet2);
++        Assert.assertEquals(true, deepEquals);
++    }
++
++    @Test
++    public void mostPopularTagsAfterDeleteTest() {
++        int size = userSessions.size();
++        Random random = new Random();
++        for (int i = 0; i < size / 2; i++) {
++            int i1 = random.nextInt(size);
++            UserSession userSession = userSessions.get(i1);
++            tagRepository.deleteTags(userSession);
++        }
++        mostPopularTagsTest();
++    }
++
+     @Test
+     public void resolvingTagsUtilTest() {
+-        userSessions.forEach(user -> tagRepository.registerTags(user));
+         int size = stringSetMap.size();
+         Random random = new Random();
+         int i = random.nextInt(size);
